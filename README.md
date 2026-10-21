@@ -56,10 +56,10 @@ Follow these steps to get the application running locally on your machine.
 
 ### 1) Install Dependencies
 Open terminal in project directory, run the following command for installing required Python packages:
-
-```bash
-pip install flask google-genai pillow
-```
+*
+  ```bash
+  pip install flask google-genai pillow
+  ```
 
 ### 2) Configure Your API Key
 Get a free API key from Google AI Studio. Set it in your terminal so the backend server can authenticate:
