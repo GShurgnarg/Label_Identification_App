@@ -1,0 +1,41 @@
+# --- Environment and API Keys (CRITICAL SAFETY) ---
+.env
+.env.local
+.flaskenv
+*.env
+# If you save keys in a shell script for setup:
+setup.sh
+secrets.txt
+
+# --- Python Virtual Environments ---
+venv/
+.venv/
+env/
+ENV/
+pyvenv.cfg
+
+# --- Python Caching and Compiled Files ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Operating System Files ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# --- Local IDE and Text Editor Configs ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# --- Temporary Test Uploads ---
+*.jpg
+*.jpeg
+*.png
+# Allow example templates, but ignore raw test photos
+!sample_label.json
