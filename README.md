@@ -68,6 +68,8 @@ Get a free API key from Google AI Studio. Set it in your terminal so the backend
   ```bash
   export GEMINI_API_KEY="your_api_key_here"
   ```
+  (I'm not as familiar with mac & linux but if you have that system this should work)
+  
 * **Windows (Command Prompt):**
   ```cmd
   set GEMINI_API_KEY="your_api_key_here"
