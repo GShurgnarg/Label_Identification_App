@@ -56,7 +56,8 @@ Follow these steps to get the application running locally on your machine.
 
 ### 1) Install Dependencies
 Open terminal in project directory, run the following command for installing required Python packages:
-*
+
+* **Terminal:**
   ```bash
   pip install flask google-genai pillow
   ```
