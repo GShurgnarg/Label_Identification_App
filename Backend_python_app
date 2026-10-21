@@ -4,29 +4,14 @@ import json
 from flask import Flask, request, jsonify, send_from_directory
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
 from PIL import Image
 
 app = Flask(__name__, static_folder='.')
-
-# Fallback/verification check for safety: fail early if environment variable is missing
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-if not GEMINI_KEY:
-    print("CRITICAL WARNING: 'GEMINI_API_KEY' environment variable is not set.")
-
-# Initialize API Client safely
-try:
-    client = genai.Client()
-except Exception as init_err:
-    client = None
-    print(f"Failed to initialize Gemini Client: {init_err}")
+client = genai.Client()
 
 PROMPT_INSTRUCTIONS = """
-You are an expert AI data extraction tool specializing in government beverage regulations (TTB standards). 
-Analyze the provided image of an alcohol beverage label and extract the following fields. 
-
-Return the response STRICTLY as a valid JSON object matching this schema. If a field cannot be found, set its value to null.
-Do not wrap your response in markdown formatting or backticks.
+Extract data from this alcohol label image. Return data strictly as a valid JSON object matching the formatting below.
+For the 'government_health_warning', capture the exact raw casing and markdown bold markers (e.g. '**GOVERNMENT WARNING:**') exactly as they are printed on the physical label.
 
 {
   "brand_name": "string or null",
@@ -42,73 +27,94 @@ Do not wrap your response in markdown formatting or backticks.
 }
 """
 
+def clean_text_for_exact_match(val):
+    """Normalizes whitespace and casing variations for standard key comparisons."""
+    if not val:
+        return ""
+    return " ".join(str(val).strip().lower().split())
+
 @app.route('/')
 def index():
     return send_from_directory('.', 'index.html')
 
-@app.route('/api/analyze-label', methods=['POST'])
-def analyze_label():
-    # 1. Handle against empty initialization
-    if not client:
-        return jsonify({"error": "AI Backend Client setup is incomplete. Check server logs."}), 500
+@app.route('/api/verify-label', methods=['POST'])
+def verify_label():
+    if 'image' not in request.files or 'expected_data' not in request.files:
+        return jsonify({"error": "Missing image file or expected_data description file."}), 400
 
-    # 2. Verify attachment exists in request body
-    if 'image' not in request.files:
-        return jsonify({"error": "No image attachment payload found in the request."}), 400
-        
-    file = request.files['image']
-    
-    # 3. Handling against empty submission strings
-    if file.filename == '':
-        return jsonify({"error": "Empty file submitted. Please choose or capture an image."}), 400
+    image_file = request.files['image']
+    expected_file = request.files['expected_data']
 
     try:
-        # 4. Handle PIL decoding exceptions (e.g. user uploaded a corrupted file or an invalid filetype)
+        # 1. Parse Expected JSON Profile Data
         try:
-            image_bytes = file.read()
-            pil_image = Image.open(io.BytesIO(image_bytes))
-            # Verify readable image format through basic transformation
-            pil_image.verify() 
-            # Re-open because verify() closes the stream context
-            pil_image = Image.open(io.BytesIO(image_bytes))
+            expected_json = json.loads(expected_file.read().decode('utf-8'))
         except Exception:
-            return jsonify({"error": "The uploaded file is not a valid or supported format."}), 400
-        
-        # 5. Connect to Google GenAI with exception blocks
-        try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[pil_image, PROMPT_INSTRUCTIONS],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
-            )
-        except APIError as api_err:
-            # Catch direct upstream rate limiting, quota overages, or downtime
-            return jsonify({"error": f"Upstream AI service error: {api_err.message}"}), 502
-        except Exception as general_api_err:
-            return jsonify({"error": f"Failed contacting the cloud inference service: {str(general_api_err)}"}), 500
+            return jsonify({"error": "Expected data file must be valid JSON matching your label profile schema."}), 400
 
-        # 6. Handle and structure the structural JSON responses
-        cleaned_text = response.text.strip()
+        # 2. Process Image through Gemini API
+        image_bytes = image_file.read()
+        pil_image = Image.open(io.BytesIO(image_bytes))
         
-        # Remove accidental markdown wrappers if the AI enters them
-        if cleaned_text.startswith("```"):
-            cleaned_text = cleaned_text.strip("```").strip("json").strip()
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[pil_image, PROMPT_INSTRUCTIONS],
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        
+        extracted_text = response.text.strip()
+        if extracted_text.startswith("```"):
+            extracted_text = extracted_text.strip("```").strip("json").strip()
+            
+        extracted_json = json.loads(extracted_text)
 
-        try:
-            parsed_json = json.loads(cleaned_text)
-            return jsonify(parsed_json), 200
-        except json.JSONDecodeError:
-            # If text data failed structured validation
-            return jsonify({
-                "error": "The AI read the label but returned an invalid JSON data structure.",
-                "raw_output": cleaned_text
-            }), 522
+        # 3. Structural Comparison Engine (Exact Value Matching)
+        mismatches = {}
+        fields_to_compare = [
+            'brand_name', 'class_type_designation', 'alcohol_content', 
+            'net_contents', 'country_of_origin'
+        ]
+
+        for field in fields_to_compare:
+            exp_val = expected_json.get(field)
+            ext_val = extracted_json.get(field)
+            if clean_text_for_exact_match(exp_val) != clean_text_for_exact_match(ext_val):
+                mismatches[field] = {"expected": exp_val, "extracted_from_photo": ext_val}
+
+        # Handle nested Producer dict safely
+        exp_prod = expected_json.get('bottler_producer_details', {}) or {}
+        ext_prod = extracted_json.get('bottler_producer_details', {}) or {}
+        for subfield in ['name', 'address']:
+            ev = exp_prod.get(subfield)
+            xv = ext_prod.get(subfield)
+            if clean_text_for_exact_match(ev) != clean_text_for_exact_match(xv):
+                mismatches[f"bottler_producer_details.{subfield}"] = {"expected": ev, "extracted_from_photo": xv}
+
+        # 4. Strict TTB Compliance Logic (All-Caps & Bold Checks)
+        gov_warning_text = extracted_json.get('government_health_warning', '') or ''
         
-    except Exception as server_err:
-        # Global block to keep app from crashing
-        return jsonify({"error": f"An unhandled internal server error occurred: {str(server_err)}"}), 500
+        # Check if the header itself is marked bold natively via markdown wrappers (**TEXT**)
+        has_bold_markers = "**GOVERNMENT WARNING:" in gov_warning_text or "__GOVERNMENT WARNING:" in gov_warning_text
+        
+        # Check if the string "GOVERNMENT WARNING:" is explicitly capitalized completely
+        is_uppercase = "GOVERNMENT WARNING:" in gov_warning_text.upper() and "government warning" not in gov_warning_text
+
+        ttb_compliance = {
+            "raw_extracted_warning_string": gov_warning_text,
+            "contains_bold_styling_indicators": has_bold_markers,
+            "header_is_all_caps": is_uppercase,
+            "government_warning_compliant": has_bold_markers and is_uppercase
+        }
+
+        return jsonify({
+            "mismatches_found": len(mismatches),
+            "mismatch_details": mismatches,
+            "ttb_compliance": ttb_compliance,
+            "full_extracted_data": extracted_json
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Internal process crash: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
