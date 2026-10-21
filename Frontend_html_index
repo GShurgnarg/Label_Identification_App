@@ -5,56 +5,104 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Label Scanner</title>
     <style>
-        body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; text-align: center; }
-        #preview { max-width: 100%; margin-top: 10px; display: none; border-radius: 8px; }
-        .btn { display: inline-block; padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; margin-top: 10px; }
-        #results { text-align: left; background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 20px; display: none; white-space: pre-wrap; }
+        body { font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; text-align: center; color: #333; }
+        #preview { max-width: 100%; margin-top: 15px; display: none; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .btn { display: inline-block; padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; margin-top: 10px; font-weight: bold; }
+        .btn:disabled { background: #cccccc; cursor: not-allowed; }
+        #status { font-weight: bold; margin-top: 15px; min-height: 20px; }
+        .error { color: #dc3545; background: #f8d7da; padding: 10px; border-radius: 4px; border: 1px solid #f5c6cb; }
+        .success { color: #155724; background: #d4edda; padding: 10px; border-radius: 4px; border: 1px solid #c3e6cb; }
+        #results { text-align: left; background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 20px; display: none; white-space: pre-wrap; font-family: monospace; border: 1px solid #ddd; }
     </style>
 </head>
 <body>
     <h2>Alcohol Label Scanner</h2>
     
-    <!-- Hidden file input optimized to trigger phone cameras natively -->
     <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;">
-    <button class="btn" onclick="document.getElementById('cameraInput').click()">Take Photo</button>
+    <button class="btn" id="uploadBtn" onclick="document.getElementById('cameraInput').click()">Take Photo</button>
     
-    <br>
+    <div id="status"></div>
     <img id="preview" alt="Preview of captured label">
     <div id="results"></div>
 
     <script>
         const cameraInput = document.getElementById('cameraInput');
+        const uploadBtn = document.getElementById('uploadBtn');
         const preview = document.getElementById('preview');
+        const statusDiv = document.getElementById('status');
         const resultsDiv = document.getElementById('results');
 
         cameraInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
-            // Show local preview image
+            // Client-side validation: Max 15MB file size limit to prevent crash/timeout
+            const MAX_SIZE = 15 * 1024 * 1024;
+            if (file.size > MAX_SIZE) {
+                showError("The file is too large. Please take a smaller picture (under 15MB).");
+                return;
+            }
+
+            // Setup UI states
+            setLoadingState(true);
             preview.src = URL.createObjectURL(file);
             preview.style.display = 'block';
-            resultsDiv.style.display = 'block';
-            resultsDiv.innerText = 'Analyzing label... Please wait.';
 
-            // Prepare image file payload
             const formData = new FormData();
             formData.append('image', file);
 
             try {
-                // Send to your Python backend
+                // Fetch request with a 30-second timeout fallback
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
+
                 const response = await fetch('/api/analyze-label', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
-                const data = await response.json();
                 
-                // Format and display structural JSON data nicely
+                clearTimeout(timeoutId);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    // Pull backend-provided error message or use fallback code text
+                    throw new Error(data.error || `Server responded with status ${response.status}`);
+                }
+                
+                showSuccess("Label read successfully!");
                 resultsDiv.innerText = JSON.stringify(data, null, 2);
+                resultsDiv.style.display = 'block';
+
             } catch (err) {
-                resultsDiv.innerText = 'Error reading the photo: ' + err.message;
+                if (err.name === 'AbortError') {
+                    showError("The request timed out. Connection to the server took too long.");
+                } else {
+                    showError(err.message);
+                }
+                resultsDiv.style.display = 'none';
+            } finally {
+                setLoadingState(false);
             }
         });
+
+        function setLoadingState(isLoading) {
+            uploadBtn.disabled = isLoading;
+            if (isLoading) {
+                statusDiv.className = '';
+                statusDiv.innerText = 'Uploading and processing photo... Please wait.';
+            }
+        }
+
+        function showError(msg) {
+            statusDiv.className = 'error';
+            statusDiv.innerText = "Error: " + msg;
+        }
+
+        function showSuccess(msg) {
+            statusDiv.className = 'success';
+            statusDiv.innerText = "Success: " + msg;
+        }
     </script>
 </body>
 </html>
